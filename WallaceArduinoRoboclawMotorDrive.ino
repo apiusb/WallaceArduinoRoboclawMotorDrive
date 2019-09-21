@@ -11,39 +11,66 @@
 #define MAX_CMD_BUF 3
 #define MAX_PARM_BUF 4
 
+#define FORWARD 0
+#define BACKWARD 1
+#define ROTLEFT 2
+#define ROTRIGHT 3
+#define STOPPED 4
+#define DIRERR  5
+
+/////////////// this is the main serial input buffer to temporarily store whatever came in from USB serial /////////
 char receivedChars[MAX_USB_RX_BUF];   // an array to store the received data
-bool newData = false;
 
-bool usbDataReadyToParse = false;
-
+/////////////// these small buffers store whatever was parsed from the above input USB serial buffer ////////////
 char command[MAX_CMD_BUF] = {'\0'};
 char param1[MAX_PARM_BUF]  = {'\0'};
 char param2[MAX_PARM_BUF]  = {'\0'};
 
+////////////// these flags control the program flow.  first we need new data. then we need to parse it. then we execute /////
+bool thereIsAnError = false;
+bool newData = false;
+bool usbDataReadyToParse = false;
 bool newCommandIsReady = false;
 
+
+///////////// for every command we incr this.  the host can request this value. if arduino had reset, this value would
+///////////// start at 0 again, indicating a problem.
 long numCmdsRxdFromUSB = 0;
 
+//////////// these are roboclaw values that are set as a result of calling roboclaw library functions.
 bool rcValid;
 uint8_t rcStatus;
 
+//////////// these are the other global values related to the roboclaw, of interest
 char version[32];
 uint16_t volts;
 int16_t amps1, amps2;
 uint16_t temp;
-int32_t speedM1, speedM2;
+int32_t prevSpeedM1 = 0, prevSpeedM2 = 0;
+int32_t speedM1 = 0, speedM2 = 0;
+byte prevDirection = STOPPED;
+byte direction = STOPPED;
 
 unsigned long prevMillisLastTimeReadVoltsAmpsTemp = millis();
 unsigned long prevMillisLastCommand = millis();
 unsigned long nowMillis = millis();
 
+////////////  we need to know if motors were commanded to turn, as a safety feature, so we can shut them down.
 bool motorM1Rotating = false;
 bool motorM2Rotating = false;
+
 
 
 SoftwareSerial serial(rcRxPin, rcTxPin);
 RoboClaw roboclaw(&serial, 10000);
 
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
+//  Typical Arduino setup
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
 void setup() {
   //Open Serial and roboclaw serial ports
   Serial.begin(115200);
@@ -51,23 +78,41 @@ void setup() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
 //  MAIN LOOP
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////
 void loop() {
 
+  // safety and / or status related functions
   stopMotorsIfBeenTooLongSinceLastCommand();
   readRcVoltsAmpsTempIfBeenTooLongSinceLastTime();
-  
+
+  //these functions will do (or not) something, based on the above global program-flow flags
+  //Example:
+  //  newData
+  //  usbDataReadyToParse
+  //  newCommandIsReady
   recvIncomingUsbSerialWithEndMarker();
   showIncomingUsbSerial(false);
   parseIncomingUsbSerial(false);
   commandHandler();
 
+  //this may be optional.. but the Roboclaw takes a certain amount of time to do stuff
+  //and I didnt want to be stepping on it by having yet another command (or other function)
+  // interfering during that time.
   delay(10);
 }
 
 
 
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
+// Start of Functions
+///////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
 
 
 
@@ -110,24 +155,30 @@ void commandHandler() {
     case 25: //read both motors speed
       readRcMotorSpeeds(true);
       break;
+    /*
+    // eliminating option to only move one side of robot
     case 26: //move motor 1 forward
       rotateLeftSideForward(param1, true);
       break;
     case 27: //move motor 2 forward
       rotateRightSideForward(param1, true);
       break;
+*/
     case 28: //stop both motors
       stopMotors(true);
       break;
     case 29:
       moveForward(true);
       break;
+    /*
+    // eliminating option to only move one side of robot
     case 30:
       rotateLeftSideBackward(param1, true);
       break;
     case 31:
       rotateRightSideBackward(param1, true);
       break;
+      */
     case 32:
       moveBackward(true);
       break;
@@ -145,9 +196,9 @@ void commandHandler() {
   newCommandIsReady = false;
 }
 
-//////////////////// Arduino user - instructions /////////////////////////
-//////////////////// Arduino user - instructions /////////////////////////
-//////////////////// Arduino user - instructions /////////////////////////
+//////////////////// Arduino user - instructions functions /////////////////////////
+//////////////////// Arduino user - instructions functions /////////////////////////
+//////////////////// Arduino user - instructions functions /////////////////////////
 void getHelp() {
   Serial.println("20 - version");
   Serial.println("21 - volts");
@@ -186,7 +237,8 @@ void readRcVersion() {
   if (roboclaw.ReadVersion(address, version)) {
     Serial.println(version);
   } else {
-    Serial.println("ERVER");
+    Serial.println("ERRVER");
+    thereIsAnError = true;
   }
 }
 
@@ -205,7 +257,8 @@ void readRcVoltage(bool print) {
     if (print) Serial.println(volts / 10.0f);
   } else {
     if (print) Serial.println("ERVOLT");
-    else volts = -1;
+    volts = -1;
+    thereIsAnError = true;
   }
 }
 
@@ -225,10 +278,9 @@ void readRcCurrents(bool print) {
     }
   } else {
     if (print) Serial.println("ERAMPS");
-    else {
-      amps1 = -1;
-      amps2 = -1;
-    }
+    amps1 = -1;
+    amps2 = -1;
+    thereIsAnError = true;
   }
 
 }
@@ -244,7 +296,8 @@ void readRcTemperature(bool print) {
     if (print) Serial.println(C2F(temp / 10.0f));
   } else {
     if (print) Serial.println("ERTEMP");
-    else temp = -1;
+    temp = -1;
+    thereIsAnError = true;
   }
 }
 
@@ -273,6 +326,7 @@ void readRcMotorSpeeds(bool print) {
   if (!rcValid) {
     if (print) { Serial.print("ERRDSPM1 : "); Serial.print(rcStatus, HEX); Serial.print(" "); Serial.println(rcValid); }
     speedM1 = -1;
+    thereIsAnError = true;
   }
 
   rcStatus = 0; rcValid = false;
@@ -280,6 +334,7 @@ void readRcMotorSpeeds(bool print) {
   if (!rcValid) {
     if (print) { Serial.print("ERRDSPM2 : "); Serial.print(rcStatus, HEX); Serial.print(" "); Serial.println(rcValid); }
     speedM2 = -1;
+    thereIsAnError = true;
   }
 
   String results = "{'m1':";
@@ -290,13 +345,39 @@ void readRcMotorSpeeds(bool print) {
   Serial.println(results);
 }
 
+void moveForward(bool print) {
+  direction = FORWARD;
+  if (prevDirection == direction && 
+  rotateLeftSideForward(param1, print);
+  rotateRightSideForward(param2, print);
+}
+
+void moveBackward(bool print) {
+  direction = BACKWARD;
+  rotateLeftSideBackward(param1, print);
+  rotateRightSideBackward(param2, print);
+}
+
+void rotateLeft(bool print) {
+  direction = ROTLEFT;
+  rotateLeftSideBackward(param1, print);
+  rotateRightSideForward(param2, print);
+}
+
+void rotateRight(bool print) {
+  direction = ROTRIGHT;
+  rotateLeftSideForward(param1, print);
+  rotateRightSideBackward(param2, print);
+}
+
 void rotateLeftSideForward(char* param, bool print) {
   uint8_t speed = (uint8_t)strtol(param, NULL, 10);
   if (roboclaw.ForwardM1(address, speed)) {
     motorM1Rotating = true;
-    readRcMotorSpeeds(print);
   } else {
     if (print) Serial.println("ERRROTM1F");
+    thereIsAnError = true;
+    direction = DIRERR;
   }
 }
 
@@ -304,9 +385,10 @@ void rotateRightSideForward(char* param, bool print) {
   uint8_t speed = (uint8_t)strtol(param, NULL, 10);
   if (roboclaw.ForwardM2(address, speed)) {
     motorM2Rotating = true;
-    readRcMotorSpeeds(print);
   } else {
     if (print) Serial.println("ERRROTM2F");
+    thereIsAnError = true;
+    direction = DIRERR;
   }
 }
 
@@ -317,27 +399,27 @@ void stopMotors(bool print) {
     motorM1Rotating = false;
   } else {
     if (print) Serial.println("ERRSTOPM1");
+    thereIsAnError = true;
+    direction = DIRERR;
   }
   if (roboclaw.ForwardM2(address, speed)) {
     if (print) Serial.println("M2 stopped");
     motorM2Rotating = false;
   } else {
     if (print) Serial.println("ERRROTM1F");
+    thereIsAnError = true;
+    direction = DIRERR;
   }
-}
-
-void moveForward(bool print) {
-  rotateLeftSideForward(param1, print);
-  rotateRightSideForward(param2, print);
 }
 
 void rotateLeftSideBackward(char* param, bool print) {
   uint8_t speed = (uint8_t)strtol(param, NULL, 10);
   if (roboclaw.BackwardM1(address, speed)) {
     motorM1Rotating = true;
-    readRcMotorSpeeds(print);
   } else {
     if (print) Serial.println("ERRROTM1B");
+    thereIsAnError = true;
+    direction = DIRERR;
   }
 }
 
@@ -345,25 +427,11 @@ void rotateRightSideBackward(char* param, bool print) {
   uint8_t speed = (uint8_t)strtol(param, NULL, 10);
   if (roboclaw.BackwardM2(address, speed)) {
     motorM2Rotating = true;
-    readRcMotorSpeeds(print);
   } else {
     if (print) Serial.println("ERRROTM2B");
+    thereIsAnError = true;
+    direction = DIRERR;
   }
-}
-
-void moveBackward(bool print) {
-  rotateLeftSideBackward(param1, print);
-  rotateRightSideBackward(param2, print);
-}
-
-void rotateLeft(bool print) {
-  rotateLeftSideBackward(param1, print);
-  rotateRightSideForward(param2, print);
-}
-
-void rotateRight(bool print) {
-  rotateLeftSideForward(param1, print);
-  rotateRightSideBackward(param2, print);
 }
 
 
