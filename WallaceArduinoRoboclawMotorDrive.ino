@@ -18,6 +18,8 @@
 #define STOPPED 4
 #define DIRERR  5
 
+#define TIMEOUT_SEND_STATUS_TO_HOST 3000
+
 /////////////// this is the main serial input buffer to temporarily store whatever came in from USB serial /////////
 char receivedChars[MAX_USB_RX_BUF];   // an array to store the received data
 
@@ -95,7 +97,7 @@ void loop() {
   //  newData
   //  usbDataReadyToParse
   //  newCommandIsReady
-  recvIncomingUsbSerialWithEndMarker();
+  recvIncomingUsbSerialWithEndMarker(false);
   showIncomingUsbSerial(false);
   parseIncomingUsbSerial(false);
   commandHandler();
@@ -206,12 +208,12 @@ void getHelp() {
   Serial.println("23 - temp");
   Serial.println("24 - volts,amps,temp");
   Serial.println("25 - read speeds");
-  Serial.println("26 - rot M1 fwd");
-  Serial.println("27 - rot M2 fwd");
+  //Serial.println("26 - rot M1 fwd");
+  //Serial.println("27 - rot M2 fwd");
   Serial.println("28 - stop motors");
   Serial.println("29 - move forward");
-  Serial.println("30 - rot M1 bck");
-  Serial.println("31 - rot M2 bck");
+  //Serial.println("30 - rot M1 bck");
+  //Serial.println("31 - rot M2 bck");
   Serial.println("32 - move back");
   Serial.println("33 - rot left");
   Serial.println("34 - rot right");
@@ -347,7 +349,6 @@ void readRcMotorSpeeds(bool print) {
 
 void moveForward(bool print) {
   direction = FORWARD;
-  if (prevDirection == direction && 
   rotateLeftSideForward(param1, print);
   rotateRightSideForward(param2, print);
 }
@@ -439,7 +440,7 @@ void rotateRightSideBackward(char* param, bool print) {
 //////////////////// private functions /////////////////////////
 //////////////////// private functions /////////////////////////
 
-void recvIncomingUsbSerialWithEndMarker() {
+void recvIncomingUsbSerialWithEndMarker(bool print) {
   static byte ndx = 0;
   char endMarker = '\n';
   char rc;
@@ -458,6 +459,7 @@ void recvIncomingUsbSerialWithEndMarker() {
       receivedChars[ndx] = '\0'; // terminate the string
       ndx = 0;
       newData = true;
+      if (print) Serial.println("Got end marker.");
     }
   }
 
@@ -479,7 +481,7 @@ void parseIncomingUsbSerial(bool print) {
     clearBuffer(command, MAX_CMD_BUF);
     clearBuffer(param1, MAX_PARM_BUF);
     clearBuffer(param2, MAX_PARM_BUF);
-    Serial.println("..parsing..");
+    if (print) Serial.println("..parsing..");
     
     byte ndx = 0;
 
@@ -563,7 +565,7 @@ void stopMotorsIfBeenTooLongSinceLastCommand() {
 
 void readRcVoltsAmpsTempIfBeenTooLongSinceLastTime() {
     nowMillis = millis();
-    if (nowMillis - prevMillisLastTimeReadVoltsAmpsTemp > 10000) {
+    if (nowMillis - prevMillisLastTimeReadVoltsAmpsTemp > TIMEOUT_SEND_STATUS_TO_HOST) {
       prevMillisLastTimeReadVoltsAmpsTemp = millis();
       readRcVoltsAmpsTemp();      
     }
